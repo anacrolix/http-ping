@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"crypto/tls"
 	"flag"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/anacrolix/missinggo"
@@ -15,6 +17,16 @@ import (
 type httpPinger struct {
 	strAddr string
 	port    int
+}
+
+func schemePort(scheme string) int {
+	switch scheme {
+	case "http":
+		return 80
+	case "https":
+		return 443
+	}
+	return 0
 }
 
 func main() {
@@ -26,8 +38,12 @@ func main() {
 		log.Fatal(err)
 	}
 	t := time.Now()
-	strAddr := u.Host
-	missinggo.SplitHostMaybePort(u.Host)
+	hmp := missinggo.SplitHostMaybePort(u.Host)
+	if hmp.NoPort {
+		hmp.Port = schemePort(u.Scheme)
+		hmp.NoPort = false
+	}
+	strAddr := hmp.String()
 	tcpAddr, err := net.ResolveTCPAddr("tcp", strAddr)
 	if err != nil {
 		log.Fatalln(time.Since(t), err)
@@ -40,17 +56,28 @@ func main() {
 	}
 	defer conn.Close()
 	log.Println(time.Since(t), "dialed", tcpAddr)
-	t = time.Now()
 	tlsConn := tls.Client(conn, &tls.Config{
 		InsecureSkipVerify: true,
 		ServerName:         "torrent.express",
-		// MinVersion:         tls.VersionTLS12,
+		NextProtos:         []string{"h2"},
 	})
-	log.Println(time.Since(t), "TLS client")
+	t = time.Now()
 	err = tlsConn.Handshake()
 	if err != nil {
 		log.Fatalln(time.Since(t), "error during TLS handshake:", err)
 	}
 	log.Println(time.Since(t), "TLS handshake")
-	http.NewRequest("GET", urlStr, nil)
+	req, err := http.NewRequest("GET", urlStr, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	tlsConnBufR := bufio.NewReader(tlsConn)
+	t = time.Now()
+	err = req.Write(tlsConn)
+	resp, err := http.ReadResponse(tlsConnBufR, req)
+	if err != nil {
+		log.Fatalln(time.Since(t), err)
+	}
+	log.Println(time.Since(t), "HTTP round trip")
+	resp.Write(os.Stderr)
 }
